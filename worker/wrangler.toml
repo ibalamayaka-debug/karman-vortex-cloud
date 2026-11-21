@@ -1,0 +1,15 @@
+name = "karman-cfd-worker"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[[kv_namespaces]]
+binding = "KARMAN_KV"
+id = "dd6e8101555c4a17abebe1b2eff9cb0d"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "881e01edca014d0c8236b3c61688a937"
+
+[vars]
+ALLOWED_ORIGIN = "*"
+MAX_RUNS_PER_IP_PER_HOUR = "10"
