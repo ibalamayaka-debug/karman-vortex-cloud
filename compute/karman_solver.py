@@ -183,7 +183,7 @@ boundary
     }}
     topBottom
     {{
-        type slip;
+        type patch;
         faces
         (
             (3 7 6 2)
@@ -385,6 +385,19 @@ def _write_fluid_cellset(case_dir: Path, fluid_indices: List[int]) -> None:
 """)
 
 
+def _fix_obstacle_patch_type(case_dir: Path) -> None:
+    """subsetMesh defaults the new patch type to `empty`; promote `obstacle` to `wall`."""
+    bfile = case_dir / "constant" / "polyMesh" / "boundary"
+    text = bfile.read_text(encoding="utf-8")
+    text = re.sub(
+        r"(obstacle\s*\{[^}]*?\btype\s+)empty(\s*;)",
+        r"\1wall\2",
+        text,
+        flags=re.S,
+    )
+    bfile.write_text(text, encoding="utf-8")
+
+
 def _write_initial_fields(case_dir: Path, fluid_indices: List[int], xs: np.ndarray, ys: np.ndarray) -> None:
     """Write 0/U and 0/p AFTER subsetMesh so patch `obstacle` and cell count match 100%."""
     (case_dir / "0").mkdir(parents=True, exist_ok=True)
@@ -581,6 +594,7 @@ def run_karman_simulation(raw_params: KarmanParams) -> Dict[str, object]:
         _run_foam(tmp_dir, "blockMesh", timeout=60)
         _write_fluid_cellset(tmp_dir, fluid_indices)
         _run_foam(tmp_dir, "subsetMesh -overwrite fluidCells -patch obstacle", timeout=60)
+        _fix_obstacle_patch_type(tmp_dir)
         _write_initial_fields(tmp_dir, fluid_indices, xs, ys)
         t_mesh = time.perf_counter() - t_mesh0
 
