@@ -94,7 +94,7 @@ def _run_foam(case_dir: Path, cmd: str, timeout: int = 180) -> str:
         timeout=timeout,
     )
     if proc.returncode != 0:
-        tail = "\n".join(proc.stdout.splitlines()[-40:])
+        tail = "\n".join(proc.stdout.splitlines()[-15:])
         raise RuntimeError(f"OpenFOAM command failed ({cmd}):\n{tail}")
     return proc.stdout
 
@@ -218,7 +218,7 @@ mergePatchPairs ();
     object      controlDict;
 }
 
-application     icoFoam;
+application     pisoFoam;
 startFrom       startTime;
 startTime       0;
 stopAt          endTime;
@@ -278,6 +278,7 @@ divSchemes
 {
     default         none;
     div(phi,U)      Gauss linearUpwind grad(U);
+    div((nuEff*dev2(T(grad(U))))) Gauss linear;
 }
 
 laplacianSchemes
@@ -346,7 +347,19 @@ PISO
     object      transportProperties;
 }}
 
+transportModel  Newtonian;
 nu              [0 2 -1 0 0 0 0] {nu:.8e};
+""")
+
+    (case_dir / "constant" / "turbulenceProperties").write_text("""FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  laminar;
 """)
     return fluid_indices, xs, ys
 
@@ -572,7 +585,7 @@ def run_karman_simulation(raw_params: KarmanParams) -> Dict[str, object]:
         t_mesh = time.perf_counter() - t_mesh0
 
         t_solve0 = time.perf_counter()
-        _run_foam(tmp_dir, "icoFoam", timeout=180)
+        _run_foam(tmp_dir, "pisoFoam", timeout=180)
         t_solve = time.perf_counter() - t_solve0
 
         t_post0 = time.perf_counter()
