@@ -56,7 +56,11 @@ def fastapi_app():
             wind_speed_ms=float(payload.get("wind_speed_ms", 12.0)),
         ).normalized()
 
-        result = run_karman_simulation(params)
-        return {"status": "ok", "cached": False, "result": result}
+        try:
+            result = run_karman_simulation(params)
+            return {"status": "ok", "cached": False, "result": result}
+        except Exception as exc:
+            import traceback
+            raise HTTPException(status_code=500, detail=f"{exc}\n{traceback.format_exc()[-800:]}")
 
     return web

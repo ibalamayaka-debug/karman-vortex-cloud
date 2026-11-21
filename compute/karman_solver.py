@@ -133,17 +133,13 @@ def obstacle_mask(shape: str, angle_deg: float, cx: np.ndarray, cy: np.ndarray) 
     return (x * x + y * y) <= (0.50 ** 2)
 
 
-def _write_case(case_dir: Path, params: KarmanParams) -> List[int]:
-    """
-    Build the complete 2D OpenFOAM icoFoam case and write cellSet `fluidCells`
-    (all cells outside the obstacle) for instant `subsetMesh`.
-    """
-    for sub in ("0", "constant/polyMesh/sets", "system"):
+def _write_mesh_and_system(case_dir: Path, params: KarmanParams) -> Tuple[List[int], np.ndarray, np.ndarray]:
+    """Write system/* and constant/transportProperties prior to blockMesh."""
+    for sub in ("constant", "system"):
         (case_dir / sub).mkdir(parents=True, exist_ok=True)
 
     nu = 1.0 / params.reynolds  # Dimensionless U_inf = 1.0, D = 1.0 => nu = 1 / Re
 
-    # system/blockMeshDict (single perfectly orthogonal 2D block)
     (case_dir / "system" / "blockMeshDict").write_text(f"""FoamFile
 {{
     version     2.0;
@@ -208,35 +204,12 @@ boundary
 mergePatchPairs ();
 """)
 
-    # Compute exact blockMesh cell centers analytically (blockMesh orders x fastest, then y)
     xs = X_MIN + (np.arange(NX) + 0.5) * DX
     ys = Y_MIN + (np.arange(NY) + 0.5) * DY
-    GX, GY = np.meshgrid(xs, ys)  # shape (NY, NX)
+    GX, GY = np.meshgrid(xs, ys)
     solid_2d = obstacle_mask(params.shape, params.angle_deg, GX, GY)
     fluid_indices = np.flatnonzero(~solid_2d.ravel()).tolist()
 
-    # Write OpenFOAM cellSet `fluidCells` directly (0.01s, supports ANY 2D obstacle shape!)
-    cell_list_str = "\n".join(str(i) for i in fluid_indices)
-    (case_dir / "constant" / "polyMesh" / "sets" / "fluidCells").write_text(f"""FoamFile
-{{
-    version     2.0;
-    format      ascii;
-    class       cellSet;
-    location    "constant/polyMesh/sets";
-    object      fluidCells;
-}}
-
-{len(fluid_indices)}
-(
-{cell_list_str}
-)
-""")
-
-    # Time stepping:
-    #   deltaT = 0.035 -> Co ~ 0.32 (well within stability for icoFoam!)
-    #   Total simulated dimensionless time T = 42.0 s (~7-8 shedding periods -> clean periodic state!)
-    #   Capture 48 frames in the final 16.8 s (t = 25.2 .. 42.0, dt_frame = 0.35 s = 10 steps)
-    #   That gives ~3 full smooth Karman shedding cycles!
     (case_dir / "system" / "controlDict").write_text("""FoamFile
 {
     version     2.0;
@@ -278,7 +251,7 @@ functions
         pitchAxis       (0 0 1);
         magUInf         1.0;
         lRef            1.0;
-        Aref            0.1;  // D * z_thickness (1.0 * 0.1)
+        Aref            0.1;
     }
 }
 """)
@@ -375,9 +348,34 @@ PISO
 
 nu              [0 2 -1 0 0 0 0] {nu:.8e};
 """)
+    return fluid_indices, xs, ys
 
-    # Slight initial y-asymmetry in 0/U breaks symmetry immediately so vortex shedding
-    # reaches full periodic amplitude within t < 18 s (no wasted startup time).
+
+def _write_fluid_cellset(case_dir: Path, fluid_indices: List[int]) -> None:
+    """Write cellSet AFTER blockMesh so blockMesh cannot wipe constant/polyMesh/sets."""
+    sets_dir = case_dir / "constant" / "polyMesh" / "sets"
+    sets_dir.mkdir(parents=True, exist_ok=True)
+    cell_list_str = "\n".join(str(i) for i in fluid_indices)
+    (sets_dir / "fluidCells").write_text(f"""FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       cellSet;
+    location    "constant/polyMesh/sets";
+    object      fluidCells;
+}}
+
+{len(fluid_indices)}
+(
+{cell_list_str}
+)
+""")
+
+
+def _write_initial_fields(case_dir: Path, fluid_indices: List[int], xs: np.ndarray, ys: np.ndarray) -> None:
+    """Write 0/U and 0/p AFTER subsetMesh so patch `obstacle` and cell count match 100%."""
+    (case_dir / "0").mkdir(parents=True, exist_ok=True)
+
     u_entries = []
     for idx in fluid_indices:
         iy, ix = divmod(idx, NX)
@@ -459,17 +457,15 @@ boundaryField
         type            slip;
     }
     obstacle
-    {{
+    {
         type            zeroGradient;
-    }}
+    }
     frontAndBack
     {
         type            empty;
     }
 }
-""".replace("{{", "{").replace("}}", "}"))
-
-    return fluid_indices
+""")
 
 
 _VEC_LIST_RE = re.compile(r"internalField\s+nonuniform\s+List<vector>\s+\d+\s*\((.*?)\)\s*;", re.S)
@@ -566,11 +562,13 @@ def run_karman_simulation(raw_params: KarmanParams) -> Dict[str, object]:
 
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"of_karman_{case_key}_"))
     try:
-        fluid_indices = _write_case(tmp_dir, params)
+        fluid_indices, xs, ys = _write_mesh_and_system(tmp_dir, params)
 
         t_mesh0 = time.perf_counter()
         _run_foam(tmp_dir, "blockMesh", timeout=60)
+        _write_fluid_cellset(tmp_dir, fluid_indices)
         _run_foam(tmp_dir, "subsetMesh -overwrite fluidCells -patch obstacle", timeout=60)
+        _write_initial_fields(tmp_dir, fluid_indices, xs, ys)
         t_mesh = time.perf_counter() - t_mesh0
 
         t_solve0 = time.perf_counter()
